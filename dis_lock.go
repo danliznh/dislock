@@ -72,12 +72,14 @@ func (c *DisLockClient)randomToken() (string,error) {
 
 func (c *DisLockClient)obtain(ctx context.Context, key,value string, ttl time.Duration) (bool, error)  {
 
-	res, err := redis.Int(c.conn.Do("set", key, value ,"px",formatMs(ttl), "nx"))
+	res, err := redis.String(c.conn.Do("set", key, value ,"px",formatMs(ttl), "nx"))
 	if err != nil{
+		fmt.Printf("setnx error:%v\n", err)
 		return false, nil
 	}
 
-	if res == 1{
+	fmt.Printf("setnx result:%s\n", res)
+	if res == "OK" {
 		return true,nil
 	}
 
@@ -104,6 +106,7 @@ func (c *DisLockClient) Obtain(ctx context.Context, key string, ttl time.Duratio
 	var timer *time.Timer
 	for {
 		ok, err := c.obtain(deadlinectx, key, value, ttl)
+
 		if err != nil {
 			return nil, err
 		} else if ok {
@@ -162,7 +165,7 @@ func (l *Lock) Metadata() string {
 
 // TTL returns the remaining time-to-live. Returns 0 if the lock has expired.
 func (l *Lock) TTL(ctx context.Context) (time.Duration, error) {
-	res, err := redis.Int(luaPTTL.Do(l.client.conn,[]string{l.key}, l.value)) //luaPTTL.Run(ctx, l.client.client, []string{l.key}, l.value).Result()
+	res, err := redis.Int(luaPTTL.Do(l.client.conn,[]string{l.key}, l.value))
 	if err == redis.ErrNil {
 		return 0, nil
 	} else if err != nil {
@@ -179,7 +182,7 @@ func (l *Lock) TTL(ctx context.Context) (time.Duration, error) {
 // May return ErrNotObtained if refresh is unsuccessful.
 func (l *Lock) Refresh(ctx context.Context, ttl time.Duration, opt *Options) error {
 	ttlVal := strconv.FormatInt(int64(ttl/time.Millisecond), 10)
-	status, err :=  redis.Int(luaRefresh.Do(l.client.conn, []string{l.key}, l.value, ttlVal)) // luaRefresh.Run(ctx, l.client.client, []string{l.key}, l.value, ttlVal).Result()
+	status, err :=  redis.Int(luaRefresh.Do(l.client.conn, l.key, l.value, ttlVal))
 	if err != nil {
 		return err
 	} else if status == int(1) {
@@ -205,20 +208,15 @@ func (l *Lock)autoRefresh(ctx context.Context, ttl time.Duration, opt *Options) 
 	//ttlVal := strconv.FormatInt(int64(ttl/time.Millisecond), 10)
 	retry := LinearBackoff(ttl/3)
 
+
 	//deadlinectx, cancel := context.WithDeadline(ctx, time.Now().Add(ttl))
 	//defer cancel()
 
 	var timer *time.Timer
 	for {
-		 err := l.Refresh(ctx, ttl, opt)
-		if err != nil {
-			fmt.Printf("refresh error, so continue:%s\n", err.Error())
-			continue
-		}
-
 		backoff := retry.NextBackoff()
 
-
+		fmt.Printf("next backoff:%v\n", backoff)
 		if timer == nil {
 			timer = time.NewTimer(backoff)
 			//defer timer.Stop()
@@ -227,28 +225,38 @@ func (l *Lock)autoRefresh(ctx context.Context, ttl time.Duration, opt *Options) 
 		}
 		select {
 		case <-l.done:
-			fmt.Printf("the lock released, so exit")
-			break // exit
+			//fmt.Printf("the lock released, so exit\n")
+			return // exit
 		case <-timer.C:
 			// continue
 		}
+
+		 err := l.Refresh(ctx, ttl, opt)
+		 if err != nil && err == ErrNotObtained {
+			//fmt.Printf("not obtained exit:%s\n", l.Token())
+			break
+		}
+
+
 	}
 }
 
 // Release manually releases the lock.
 // May return ErrLockNotHeld.
 func (l *Lock) Release(ctx context.Context) error {
-	res, err :=  redis.Int(luaRelease.Do(l.client.conn,[]string{l.key},l.value))  //luaRelease.Run(ctx, l.client.client, []string{l.key}, l.value).Result()
+	//fmt.Printf("%p", l.client.conn)
+	res, err :=  redis.Int(luaRelease.Do(l.client.conn,l.key,l.value))
 	if err == redis.ErrNil {
+		l.done <- 1
 		return ErrLockNotHeld
 	} else if err != nil {
 		return err
 	}
 
+	l.done <-1
 	if  res != 1 {
 		return ErrLockNotHeld
 	}
-	l.done <- 1
 	return nil
 }
 
