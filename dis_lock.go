@@ -32,7 +32,7 @@ var (
 
 /*// RedisClient is a minimal client interface.
 type LockClient interface {
-	SetNX(ctx context.Context, key string, value interface{}, expiration time.Duration) error
+	SetNX(ctx context.Context, unit_key string, value interface{}, expiration time.Duration) error
 	Eval(ctx context.Context, script string, keys []string, args ...interface{}) error
 	EvalSha(ctx context.Context, sha1 string, keys []string, args ...interface{}) error
 	ScriptExists(ctx context.Context, scripts ...string) error
@@ -88,7 +88,7 @@ func (c *DisLockClient)obtain(ctx context.Context, key,value string, ttl time.Du
 }
 
 
-// Obtain tries to obtain a new lock using a key with the given TTL.
+// Obtain tries to obtain a new lock using a unit_key with the given TTL.
 // May return ErrNotObtained if not successful.
 func (c *DisLockClient) Obtain(ctx context.Context, key string, ttl time.Duration, opt *Options) (*Lock, error) {
 	// Create a random token
@@ -148,7 +148,7 @@ func Obtain(ctx context.Context, conn redis.Conn, key string, ttl time.Duration,
 	return New(conn).Obtain(ctx, key, ttl, opt)
 }
 
-// Key returns the redis key used by the lock.
+// Key returns the redis unit_key used by the lock.
 func (l *Lock) Key() string {
 	return l.key
 }
