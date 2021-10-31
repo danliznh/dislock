@@ -248,6 +248,7 @@ func (l *Lock) Release(ctx context.Context) error {
 	if  res != 1 {
 		return ErrLockNotHeld
 	}
+	l.done <- 1
 	return nil
 }
 
