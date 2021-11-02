@@ -11,6 +11,6 @@ import(
 查看examples.go
 
 
-
+支持红锁redlock
 
 

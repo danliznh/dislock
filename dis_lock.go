@@ -260,6 +260,13 @@ func (l *Lock) Release(ctx context.Context) error {
 	return nil
 }
 
+func (l *Lock) releaseForRedLock(ctx context.Context) error{
+	err := l.Release(ctx)
+	l.client.conn.Close()
+	return err
+}
+
+
 // --------------------------------------------------------------------
 
 // Options describe the options for the lock
