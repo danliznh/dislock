@@ -56,16 +56,20 @@ func New(conn redis.Conn) *DisLockClient {
 	return &DisLockClient{conn: conn}
 }
 
+func makeToken(token []byte) (string,error)  {
+	if _, err := io.ReadFull(rand.Reader, token); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(token), nil
+}
+
 func (c *DisLockClient)randomToken() (string,error) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 	if len(c.token)==0{
 		c.token = make([]byte, 16)
 	}
-	if _, err := io.ReadFull(rand.Reader, c.token); err != nil {
-		return "", err
-	}
-	return base64.RawURLEncoding.EncodeToString(c.token), nil
+	return makeToken(c.token)
 }
 
 
@@ -135,6 +139,32 @@ func (c *DisLockClient) Obtain(ctx context.Context, key string, ttl time.Duratio
 	}
 }
 
+func (c *DisLockClient) Release(ctx context.Context, key , value string) error {
+	res, err :=  redis.Int(luaRelease.Do(c.conn,key,value))
+	if err == redis.ErrNil {
+		return ErrLockNotHeld
+	} else if err != nil {
+		return err
+	}
+	if res != 1{
+		return ErrLockNotHeld
+	}
+
+	return nil
+}
+
+func (c *DisLockClient) Refresh(ctx context.Context, key, value string ,ttl time.Duration)  error {
+	ttlVal := strconv.FormatInt(int64(ttl/time.Millisecond), 10)
+	status, err :=  redis.Int(luaRefresh.Do(c.conn, key, value, ttlVal))
+	if err != nil {
+		return err
+	} else if status == int(1) {
+		return nil
+	}
+	return ErrNotObtained
+}
+
+
 // Lock represents an obtained, distributed lock.
 type Lock struct {
 	client *DisLockClient
@@ -181,14 +211,7 @@ func (l *Lock) TTL(ctx context.Context) (time.Duration, error) {
 // Refresh extends the lock with a new TTL.
 // May return ErrNotObtained if refresh is unsuccessful.
 func (l *Lock) Refresh(ctx context.Context, ttl time.Duration, opt *Options) error {
-	ttlVal := strconv.FormatInt(int64(ttl/time.Millisecond), 10)
-	status, err :=  redis.Int(luaRefresh.Do(l.client.conn, l.key, l.value, ttlVal))
-	if err != nil {
-		return err
-	} else if status == int(1) {
-		return nil
-	}
-	return ErrNotObtained
+	return l.client.Refresh(ctx, l.key, l.value, ttl)
 }
 
 func safego(f func(ctx context.Context, ttl time.Duration, opt *Options), ctx context.Context, ttl time.Duration, opt *Options)  {
@@ -245,19 +268,17 @@ func (l *Lock)autoRefresh(ctx context.Context, ttl time.Duration, opt *Options) 
 // May return ErrLockNotHeld.
 func (l *Lock) Release(ctx context.Context) error {
 	//fmt.Printf("%p", l.client.conn)
-	res, err :=  redis.Int(luaRelease.Do(l.client.conn,l.key,l.value))
-	if err == redis.ErrNil {
-		l.done <- 1
-		return ErrLockNotHeld
-	} else if err != nil {
-		return err
-	}
 
-	l.done <-1
+	err := l.client.Release(ctx, l.key, l.value)
+	l.done <- 1
+
+	return err
+
+	/*l.done <-1
 	if  res != 1 {
 		return ErrLockNotHeld
 	}
-	return nil
+	return nil*/
 }
 
 func (l *Lock) releaseForRedLock(ctx context.Context) error{

@@ -4,6 +4,7 @@ import (
 	"context"
 	"github.com/gomodule/redigo/redis"
 	"net"
+	"sync"
 	"time"
 )
 
@@ -34,18 +35,17 @@ func NewRedSync(addrs []net.Addr) *RedSync  {
 
 type RedLock struct {
 	pools []*redis.Pool
-
-	locked []*Lock
 	quorum int // Quorum for the lock, set to len(pools)/2+1
+	mutex sync.Mutex
+	token string
+	key string
 
 }
 
 func (red * RedSync)NewRedLock() *RedLock {
-
 	lens := len(red.pools)
 	lock := &RedLock{
 		pools: red.pools,
-		locked: make([]*Lock, lens),
 		quorum: lens/2+1,
 	}
 	return lock
@@ -58,27 +58,38 @@ func (lock *RedLock) Lock(ctx context.Context, key string, ttl time.Duration, ob
 
 	var timer *time.Timer
 	retry := opt.getRetryStrategy()
+
+	token := make([]byte, 16)
+	value, err := makeToken(token)
+	if err != nil{
+		return err
+	}
+	value += opt.getMetadata()
+	lock.key = key
+	lock.token = value
+
+
 	for{
 		n := 0
-		locked := make([]*Lock, len(lock.pools))
-		for _ , pool := range lock.pools{
+		for _, pool := range lock.pools{
 			conn := pool.Get()
-			disLock, err := Obtain(ctx, conn, key, ttl, opt)
-			if err != nil{
-				continue
+			client := New(conn)
+			if ok, err := client.obtain(ctx, key, value, ttl); ok && err ==nil{
+				n++
 			}
-			locked[n] = disLock
-			n++
+			conn.Close()
 		}
 
+
 		if n >= lock.quorum {
-			// there must be one thread that can obtained the number of locks more than half, so there is no lock to write the lock.locked
-			lock.locked = locked
 			return nil
 		}
 
-		for _, l := range locked{
-			l.releaseForRedLock(ctx)
+		for _, pool := range lock.pools{
+			conn := pool.Get()
+			client := New(conn)
+			client.Release(ctx , key, value)
+			conn.Close()
 		}
 
 		backoff := retry.NextBackoff()
@@ -102,17 +113,20 @@ func (lock *RedLock) Lock(ctx context.Context, key string, ttl time.Duration, ob
 
 }
 
-func (lock *RedLock)Refresh(ctx context.Context, ttl time.Duration, opt *Options)  {
-	for _, l := range lock.locked{
-		l.Refresh(ctx, ttl, opt)
+func (lock *RedLock)Refresh(ctx context.Context, ttl time.Duration)  {
+	for _, pool := range lock.pools{
+		conn := pool.Get()
+		client := New(conn)
+		client.Refresh(ctx, lock.key, lock.token, ttl)
+		conn.Close()
 	}
 }
 
 func (lock *RedLock)Release(ctx context.Context)  {
-	if lock.locked == nil{
-		return
-	}
-	for _, l := range lock.locked{
-		l.Release(ctx)
+	for _, pool := range lock.pools{
+		conn := pool.Get()
+		client := New(conn)
+		client.Release(ctx, lock.key, lock.token)
+		conn.Close()
 	}
 }
